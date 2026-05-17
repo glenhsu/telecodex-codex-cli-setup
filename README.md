@@ -10,6 +10,7 @@ TeleCodex 是一個 Telegram ↔ Codex CLI 的橋接工具，讓你用手機就�
 
 - [前置需求](#前置需求)
 - [基本安裝](#基本安裝)
+- [穩定位置與自動啟動](#穩定位置與自動啟動)
 - [步驟一：設定 .env](#步驟一設定-env)
 - [步驟二：連接 Codex CLI 的自訂 Provider](#步驟二連接-codex-cli-的自訂-provider)
 - [步驟三：繞過 macOS Gatekeeper](#步驟三繞過-macos-gatekeeper)
@@ -29,9 +30,9 @@ TeleCodex 是一個 Telegram ↔ Codex CLI 的橋接工具，讓你用手機就�
 ## 基本安裝
 
 ```bash
-# Clone 專案
-git clone https://github.com/benedict2310/telecodex.git
-cd telecodex
+# Clone 專案到穩定位置（不要 clone 到 /tmp/）
+git clone https://github.com/benedict2310/telecodex.git ~/telecodex
+cd ~/telecodex
 
 # 安裝依賴
 npm install
@@ -39,6 +40,96 @@ npm install
 # 複製環境變數範本
 cp .env.example .env
 ```
+
+> **重要：** 專案位置請放在 `~/telecodex/` 或家目錄下的穩定位置。不要放在 `/tmp/`，重開機後檔案會消失。
+
+## 穩定位置與自動啟動
+
+TeleCodex 必須放在不會被重開機清掉的位置。推薦 `~/telecodex/`。
+
+### LaunchAgent 自動啟動（開機即跑）
+
+建立 `~/Library/LaunchAgents/com.telecodex.plist`：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.telecodex</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/athing/telecodex/run.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/athing/telecodex</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/athing/telecodex/telecodex.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/athing/telecodex/telecodex.err</string>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+</dict>
+</plist>
+```
+
+### run.sh（LaunchAgent entrypoint）
+
+建立 `~/telecodex/run.sh`：
+
+```bash
+#!/bin/bash
+export PATH="/opt/homebrew/bin:$PATH"
+export OMLX_API_KEY=apiapi
+cd /Users/athing/telecodex
+exec npx tsx src/index.ts
+```
+
+### 生命週期管理
+
+```bash
+# 載入（啟動）
+launchctl load ~/Library/LaunchAgents/com.telecodex.plist
+
+# 卸載（停止）
+launchctl unload ~/Library/LaunchAgents/com.telecodex.plist
+
+# 檢查狀態
+launchctl list | grep telecodex
+# → PID  STATUS  com.telecodex
+#   STATUS 0 = 正常, 127 = crash
+
+# 查看日誌
+cat ~/telecodex/telecodex.log
+cat ~/telecodex/telecodex.err
+```
+
+### codex wrapper（codex CLI 時自動啟動 telecodex）
+
+建立 `~/.local/bin/codex`，確保 PATH 優先於 `/opt/homebrew/bin/codex`：
+
+```bash
+#!/bin/bash
+TELECODEX_DIR="$HOME/telecodex"
+
+if ! pgrep -f "telecodex" >/dev/null 2>&1; then
+    echo "📱 Starting telecodex bridge..."
+    cd "$TELECODEX_DIR" && OMLX_API_KEY=apiapi npx tsx src/index.ts &
+    sleep 2
+fi
+
+exec /opt/homebrew/bin/codex "$@"
+```
+
+運作邏輯：
+1. 檢查 `pgrep -f telecodex` — LaunchAgent 已在跑就不重複啟動
+2. 如果 telecodex 沒在跑（LaunchAgent 被關掉或 crash），自動啟動它
+3. 然後 `exec` 真正的 codex binary
 
 ## 步驟一：設定 .env
 
@@ -57,7 +148,7 @@ TELEGRAM_ALLOWED_USER_IDS=你的user_id
 
 ## 步驟二：連接 Codex CLI 的自訂 Provider
 
-> 💡 **核心坑點**：TeleCodex 透過 `@openai/codex-sdk` 啟動 Codex 子程序，這個 SDK 會讀取 Codex CLI 的設定檔 `~/.codex/config.toml` 來決定用哪個 provider 和 model。
+> **核心坑點**：TeleCodex 透過 `@openai/codex-sdk` 啟動 Codex 子程序，這個 SDK 會讀取 Codex CLI 的設定檔 `~/.codex/config.toml` 來決定用哪個 provider 和 model。
 
 如果你的 Codex CLI 使用了自訂 provider（例如本地的 oMLX、NVIDIA NIM 等），**SDK 會自動繼承這些設定**，只要環境變數有設對就行。
 
@@ -84,7 +175,7 @@ OMLX_API_KEY=apiapi
 CODEX_API_KEY=apiapi
 ```
 
-> ⚠️ **為什麼要兩個？**
+> **為什麼要兩個？**
 > - `OMLX_API_KEY` — Codex CLI 內部用這個 key 去跟 oMLX server 驗證
 > - `CODEX_API_KEY` — TeleCodex 用這個 key 初始化 Codex SDK
 
@@ -130,7 +221,7 @@ private resetCodexClient(): void {
 }
 ```
 
-> 💡 這個參數直接對應 SDK 內部 `CodexExec` 建構式的 `executablePath`：
+> 這個參數直接對應 SDK 內部 `CodexExec` 建構式的 `executablePath`：
 > ```javascript
 > constructor(executablePath = null, env, configOverrides) {
 >     this.executablePath = executablePath || findCodexPath();
@@ -157,9 +248,16 @@ xattr -dr com.apple.quarantine node_modules/@openai/codex-darwin-arm64/
 
 ## 步驟四：啟動與測試
 
+### 手動啟動
+
 ```bash
-# 開發模式啟動
-npm run dev
+cd ~/telecodex && npx tsx src/index.ts
+```
+
+### 透過 LaunchAgent 啟動（開機即跑）
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.telecodex.plist
 ```
 
 成功啟動時會看到：
@@ -206,9 +304,36 @@ Session mode: per Telegram context
 3. `.env` 有沒有設對對應的環境變數？
 4. 查看 TeleCodex 啟動 log，確認有沒有「Auth: authenticated」和「Workspace: ...」
 
-### ❌ 「⚠️ ⚠️ TeleCodex is running but Codex is still initializing...」
+### ❌ 「TeleCodex is running but Codex is still initializing...」
 
 這是正常的。第一次啟動時 Codex 需要載入模型（對於本地 LLM 可能需要幾十秒到幾分鐘），等 loading 完成就好了。
+
+### ❌ LaunchAgent 無法啟動（node: No such file or directory）
+
+**原因：** launchd 的環境 PATH 只有 `/usr/bin:/bin:/usr/sbin:/sbin`，不含 `/opt/homebrew/bin`。直接在 plist 的 ProgramArguments 寫 `npx tsx` 會找不到 node。
+
+**解法：** 透過 wrapper script (`run.sh`) 執行，在 script 內先設定 `PATH="/opt/homebrew/bin:$PATH"`。
+
+### ❌ codex wrapper 用 alias 卻沒生效
+
+**原因：** alias 在 non-interactive shell 或 script 中不會生效。
+
+**解法：** 用 `~/.local/bin/codex` 放在 PATH 前面比 alias 更可靠。確保 `~/.zshrc` 有 `export PATH="$HOME/.local/bin:$PATH"`。
+
+### ❌ 409 Conflict on telecodex restart
+
+**原因：** 舊的 `getUpdates` polling 還持有 bot token 連線。
+
+**解法：** Kill 所有舊 process 再重啟：
+```bash
+ps aux | grep tsx | grep -v grep | awk '{print $2}' | xargs kill
+sleep 10
+launchctl load ~/Library/LaunchAgents/com.telecodex.plist
+```
+
+### ❌ 搬遷後 workspace 路徑問題
+
+**原因：** 從 `/tmp/telecodex` 搬到 `~/telecodex` 後，telecodex 的 runtime state（`~/.telecodex/contexts.json`）會自動記錄新的 workspace 路徑，重新啟動後即可。不需要手動處理。
 
 ## 完整範例 .env
 
@@ -223,6 +348,9 @@ TELEGRAM_ALLOWED_USER_IDS=987654321
 OMLX_API_KEY=apiapi
 CODEX_API_KEY=apiapi
 CODEX_MODEL=Qwen3.6-35B-A3B-UD-MLX-4bit
+
+# Codex binary 路徑（配合 codexPathOverride）
+CODEX_BINARY_PATH=/opt/homebrew/bin/codex
 
 # Sandbox & approval (安全起見從 workspace-write 開始)
 CODEX_SANDBOX_MODE=workspace-write
